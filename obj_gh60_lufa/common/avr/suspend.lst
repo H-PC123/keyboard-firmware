@@ -1,0 +1,958 @@
+   1               		.file	"suspend.c"
+   2               	__SP_H__ = 0x3e
+   3               	__SP_L__ = 0x3d
+   4               	__SREG__ = 0x3f
+   5               	__tmp_reg__ = 0
+   6               	__zero_reg__ = 1
+   7               		.text
+   8               	.Ltext0:
+   9               		.cfi_sections	.debug_frame
+  10               		.section	.text.suspend_idle,"ax",@progbits
+  11               	.global	suspend_idle
+  13               	suspend_idle:
+  14               	.LFB111:
+  15               		.file 1 "../../tmk_core/common/avr/suspend.c"
+   1:../../tmk_core/common/avr/suspend.c **** #include <stdbool.h>
+   2:../../tmk_core/common/avr/suspend.c **** #include <avr/sleep.h>
+   3:../../tmk_core/common/avr/suspend.c **** #include <avr/wdt.h>
+   4:../../tmk_core/common/avr/suspend.c **** #include <avr/interrupt.h>
+   5:../../tmk_core/common/avr/suspend.c **** #include "matrix.h"
+   6:../../tmk_core/common/avr/suspend.c **** #include "action.h"
+   7:../../tmk_core/common/avr/suspend.c **** #include "backlight.h"
+   8:../../tmk_core/common/avr/suspend.c **** #include "suspend_avr.h"
+   9:../../tmk_core/common/avr/suspend.c **** #include "suspend.h"
+  10:../../tmk_core/common/avr/suspend.c **** #include "timer.h"
+  11:../../tmk_core/common/avr/suspend.c **** #ifdef PROTOCOL_LUFA
+  12:../../tmk_core/common/avr/suspend.c **** #include "lufa.h"
+  13:../../tmk_core/common/avr/suspend.c **** #endif
+  14:../../tmk_core/common/avr/suspend.c **** 
+  15:../../tmk_core/common/avr/suspend.c **** 
+  16:../../tmk_core/common/avr/suspend.c **** #define wdt_intr_enable(value)   \
+  17:../../tmk_core/common/avr/suspend.c **** __asm__ __volatile__ (  \
+  18:../../tmk_core/common/avr/suspend.c ****     "in __tmp_reg__,__SREG__" "\n\t"    \
+  19:../../tmk_core/common/avr/suspend.c ****     "cli" "\n\t"    \
+  20:../../tmk_core/common/avr/suspend.c ****     "wdr" "\n\t"    \
+  21:../../tmk_core/common/avr/suspend.c ****     "sts %0,%1" "\n\t"  \
+  22:../../tmk_core/common/avr/suspend.c ****     "out __SREG__,__tmp_reg__" "\n\t"   \
+  23:../../tmk_core/common/avr/suspend.c ****     "sts %0,%2" "\n\t" \
+  24:../../tmk_core/common/avr/suspend.c ****     : /* no outputs */  \
+  25:../../tmk_core/common/avr/suspend.c ****     : "M" (_SFR_MEM_ADDR(_WD_CONTROL_REG)), \
+  26:../../tmk_core/common/avr/suspend.c ****     "r" (_BV(_WD_CHANGE_BIT) | _BV(WDE)), \
+  27:../../tmk_core/common/avr/suspend.c ****     "r" ((uint8_t) ((value & 0x08 ? _WD_PS3_MASK : 0x00) | \
+  28:../../tmk_core/common/avr/suspend.c ****         _BV(WDIE) | (value & 0x07)) ) \
+  29:../../tmk_core/common/avr/suspend.c ****     : "r0"  \
+  30:../../tmk_core/common/avr/suspend.c **** )
+  31:../../tmk_core/common/avr/suspend.c **** 
+  32:../../tmk_core/common/avr/suspend.c **** 
+  33:../../tmk_core/common/avr/suspend.c **** /* Power down MCU with watchdog timer
+  34:../../tmk_core/common/avr/suspend.c ****  * wdto: watchdog timer timeout defined in <avr/wdt.h>
+  35:../../tmk_core/common/avr/suspend.c ****  *          WDTO_15MS
+  36:../../tmk_core/common/avr/suspend.c ****  *          WDTO_30MS
+  37:../../tmk_core/common/avr/suspend.c ****  *          WDTO_60MS
+  38:../../tmk_core/common/avr/suspend.c ****  *          WDTO_120MS
+  39:../../tmk_core/common/avr/suspend.c ****  *          WDTO_250MS
+  40:../../tmk_core/common/avr/suspend.c ****  *          WDTO_500MS
+  41:../../tmk_core/common/avr/suspend.c ****  *          WDTO_1S
+  42:../../tmk_core/common/avr/suspend.c ****  *          WDTO_2S
+  43:../../tmk_core/common/avr/suspend.c ****  *          WDTO_4S
+  44:../../tmk_core/common/avr/suspend.c ****  *          WDTO_8S
+  45:../../tmk_core/common/avr/suspend.c ****  */
+  46:../../tmk_core/common/avr/suspend.c **** static uint8_t wdt_timeout = 0;
+  47:../../tmk_core/common/avr/suspend.c **** static void power_down(uint8_t wdto)
+  48:../../tmk_core/common/avr/suspend.c **** {
+  49:../../tmk_core/common/avr/suspend.c **** #ifdef PROTOCOL_LUFA
+  50:../../tmk_core/common/avr/suspend.c ****     if (USB_DeviceState == DEVICE_STATE_Configured) return;
+  51:../../tmk_core/common/avr/suspend.c **** #endif
+  52:../../tmk_core/common/avr/suspend.c ****     wdt_timeout = wdto;
+  53:../../tmk_core/common/avr/suspend.c **** 
+  54:../../tmk_core/common/avr/suspend.c ****     // Watchdog Interrupt Mode
+  55:../../tmk_core/common/avr/suspend.c ****     wdt_intr_enable(wdto);
+  56:../../tmk_core/common/avr/suspend.c **** 
+  57:../../tmk_core/common/avr/suspend.c ****     // TODO: more power saving
+  58:../../tmk_core/common/avr/suspend.c ****     // See PicoPower application note
+  59:../../tmk_core/common/avr/suspend.c ****     // - I/O port input with pullup
+  60:../../tmk_core/common/avr/suspend.c ****     // - prescale clock
+  61:../../tmk_core/common/avr/suspend.c ****     // - BOD disable
+  62:../../tmk_core/common/avr/suspend.c ****     // - Power Reduction Register PRR
+  63:../../tmk_core/common/avr/suspend.c ****     set_sleep_mode(SLEEP_MODE_PWR_DOWN);
+  64:../../tmk_core/common/avr/suspend.c ****     sleep_enable();
+  65:../../tmk_core/common/avr/suspend.c ****     sei();
+  66:../../tmk_core/common/avr/suspend.c ****     sleep_cpu();
+  67:../../tmk_core/common/avr/suspend.c ****     sleep_disable();
+  68:../../tmk_core/common/avr/suspend.c **** 
+  69:../../tmk_core/common/avr/suspend.c ****     // Disable watchdog after sleep
+  70:../../tmk_core/common/avr/suspend.c ****     wdt_disable();
+  71:../../tmk_core/common/avr/suspend.c **** }
+  72:../../tmk_core/common/avr/suspend.c **** 
+  73:../../tmk_core/common/avr/suspend.c **** static void standby(void)
+  74:../../tmk_core/common/avr/suspend.c **** {
+  75:../../tmk_core/common/avr/suspend.c ****     set_sleep_mode(SLEEP_MODE_STANDBY);
+  76:../../tmk_core/common/avr/suspend.c ****     sleep_enable();
+  77:../../tmk_core/common/avr/suspend.c ****     sei();
+  78:../../tmk_core/common/avr/suspend.c ****     sleep_cpu();
+  79:../../tmk_core/common/avr/suspend.c ****     sleep_disable();
+  80:../../tmk_core/common/avr/suspend.c **** }
+  81:../../tmk_core/common/avr/suspend.c **** 
+  82:../../tmk_core/common/avr/suspend.c **** static void idle(void)
+  83:../../tmk_core/common/avr/suspend.c **** {
+  84:../../tmk_core/common/avr/suspend.c ****     set_sleep_mode(SLEEP_MODE_IDLE);
+  85:../../tmk_core/common/avr/suspend.c ****     sleep_enable();
+  86:../../tmk_core/common/avr/suspend.c ****     sei();
+  87:../../tmk_core/common/avr/suspend.c ****     sleep_cpu();
+  88:../../tmk_core/common/avr/suspend.c ****     sleep_disable();
+  89:../../tmk_core/common/avr/suspend.c **** }
+  90:../../tmk_core/common/avr/suspend.c **** 
+  91:../../tmk_core/common/avr/suspend.c **** 
+  92:../../tmk_core/common/avr/suspend.c **** void suspend_idle(uint8_t time)
+  93:../../tmk_core/common/avr/suspend.c **** {
+  16               		.loc 1 93 0
+  17               		.cfi_startproc
+  18               	.LVL0:
+  19               	/* prologue: function */
+  20               	/* frame size = 0 */
+  21               	/* stack size = 0 */
+  22               	.L__stack_usage = 0
+  23               	.LBB9:
+  24               	.LBB10:
+  84:../../tmk_core/common/avr/suspend.c ****     sleep_enable();
+  25               		.loc 1 84 0
+  26 0000 83B7      		in r24,0x33
+  27               	.LVL1:
+  28 0002 817F      		andi r24,lo8(-15)
+  29 0004 83BF      		out 0x33,r24
+  85:../../tmk_core/common/avr/suspend.c ****     sei();
+  30               		.loc 1 85 0
+  31 0006 83B7      		in r24,0x33
+  32 0008 8160      		ori r24,lo8(1)
+  33 000a 83BF      		out 0x33,r24
+  86:../../tmk_core/common/avr/suspend.c ****     sleep_cpu();
+  34               		.loc 1 86 0
+  35               	/* #APP */
+  36               	 ;  86 "../../tmk_core/common/avr/suspend.c" 1
+  37 000c 7894      		sei
+  38               	 ;  0 "" 2
+  87:../../tmk_core/common/avr/suspend.c ****     sleep_disable();
+  39               		.loc 1 87 0
+  40               	 ;  87 "../../tmk_core/common/avr/suspend.c" 1
+  41 000e 8895      		sleep
+  42               		
+  43               	 ;  0 "" 2
+  88:../../tmk_core/common/avr/suspend.c **** }
+  44               		.loc 1 88 0
+  45               	/* #NOAPP */
+  46 0010 83B7      		in r24,0x33
+  47 0012 8E7F      		andi r24,lo8(-2)
+  48 0014 83BF      		out 0x33,r24
+  49               	/* epilogue start */
+  50               	.LBE10:
+  51               	.LBE9:
+  94:../../tmk_core/common/avr/suspend.c ****     idle();
+  95:../../tmk_core/common/avr/suspend.c **** }
+  52               		.loc 1 95 0
+  53 0016 0895      		ret
+  54               		.cfi_endproc
+  55               	.LFE111:
+  57               		.section	.text.suspend_power_down,"ax",@progbits
+  58               	.global	suspend_power_down
+  60               	suspend_power_down:
+  61               	.LFB112:
+  96:../../tmk_core/common/avr/suspend.c **** 
+  97:../../tmk_core/common/avr/suspend.c **** void suspend_power_down(void)
+  98:../../tmk_core/common/avr/suspend.c **** {
+  62               		.loc 1 98 0
+  63               		.cfi_startproc
+  64               	/* prologue: function */
+  65               	/* frame size = 0 */
+  66               	/* stack size = 0 */
+  67               	.L__stack_usage = 0
+  68               	.LVL2:
+  69               	.LBB15:
+  70               	.LBB16:
+  50:../../tmk_core/common/avr/suspend.c **** #endif
+  71               		.loc 1 50 0
+  72 0000 8091 0000 		lds r24,USB_DeviceState
+  73 0004 8430      		cpi r24,lo8(4)
+  74 0006 01F0      		breq .L2
+  52:../../tmk_core/common/avr/suspend.c **** 
+  75               		.loc 1 52 0
+  76 0008 1092 0000 		sts wdt_timeout,__zero_reg__
+  55:../../tmk_core/common/avr/suspend.c **** 
+  77               		.loc 1 55 0
+  78 000c 88E1      		ldi r24,lo8(24)
+  79 000e 90E0      		ldi r25,0
+  80 0010 20E4      		ldi r18,lo8(64)
+  81               	/* #APP */
+  82               	 ;  55 "../../tmk_core/common/avr/suspend.c" 1
+  83 0012 0FB6      		in __tmp_reg__,__SREG__
+  84 0014 F894      		cli
+  85 0016 A895      		wdr
+  86 0018 8093 6000 		sts 96,r24
+  87 001c 0FBE      		out __SREG__,__tmp_reg__
+  88 001e 2093 6000 		sts 96,r18
+  89               		
+  90               	 ;  0 "" 2
+  63:../../tmk_core/common/avr/suspend.c ****     sleep_enable();
+  91               		.loc 1 63 0
+  92               	/* #NOAPP */
+  93 0022 83B7      		in r24,0x33
+  94 0024 817F      		andi r24,lo8(-15)
+  95 0026 8460      		ori r24,lo8(4)
+  96 0028 83BF      		out 0x33,r24
+  64:../../tmk_core/common/avr/suspend.c ****     sei();
+  97               		.loc 1 64 0
+  98 002a 83B7      		in r24,0x33
+  99 002c 8160      		ori r24,lo8(1)
+ 100 002e 83BF      		out 0x33,r24
+  65:../../tmk_core/common/avr/suspend.c ****     sleep_cpu();
+ 101               		.loc 1 65 0
+ 102               	/* #APP */
+ 103               	 ;  65 "../../tmk_core/common/avr/suspend.c" 1
+ 104 0030 7894      		sei
+ 105               	 ;  0 "" 2
+  66:../../tmk_core/common/avr/suspend.c ****     sleep_disable();
+ 106               		.loc 1 66 0
+ 107               	 ;  66 "../../tmk_core/common/avr/suspend.c" 1
+ 108 0032 8895      		sleep
+ 109               		
+ 110               	 ;  0 "" 2
+  67:../../tmk_core/common/avr/suspend.c **** 
+ 111               		.loc 1 67 0
+ 112               	/* #NOAPP */
+ 113 0034 83B7      		in r24,0x33
+ 114 0036 8E7F      		andi r24,lo8(-2)
+ 115 0038 83BF      		out 0x33,r24
+ 116               	.LBB17:
+ 117               	.LBB18:
+ 118               		.file 2 "c:\\avr-gcc-7.2.0-x64-mingw\\avr\\include\\avr\\wdt.h"
+   1:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** /* Copyright (c) 2002, 2004 Marek Michalkiewicz
+   2:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****    Copyright (c) 2005, 2006, 2007 Eric B. Weddington
+   3:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****    All rights reserved.
+   4:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 
+   5:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****    Redistribution and use in source and binary forms, with or without
+   6:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****    modification, are permitted provided that the following conditions are met:
+   7:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 
+   8:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****    * Redistributions of source code must retain the above copyright
+   9:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****      notice, this list of conditions and the following disclaimer.
+  10:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 
+  11:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****    * Redistributions in binary form must reproduce the above copyright
+  12:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****      notice, this list of conditions and the following disclaimer in
+  13:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****      the documentation and/or other materials provided with the
+  14:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****      distribution.
+  15:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 
+  16:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****    * Neither the name of the copyright holders nor the names of
+  17:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****      contributors may be used to endorse or promote products derived
+  18:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****      from this software without specific prior written permission.
+  19:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 
+  20:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+  21:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****   AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+  22:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****   IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+  23:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****   ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+  24:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****   LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+  25:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****   CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+  26:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****   SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+  27:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****   INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+  28:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****   CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+  29:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****   ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+  30:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****   POSSIBILITY OF SUCH DAMAGE. */
+  31:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 
+  32:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** /* $Id: wdt.h 2503 2016-02-07 22:59:47Z joerg_wunsch $ */
+  33:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 
+  34:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** /*
+  35:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****    avr/wdt.h - macros for AVR watchdog timer
+  36:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****  */
+  37:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 
+  38:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** #ifndef _AVR_WDT_H_
+  39:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** #define _AVR_WDT_H_
+  40:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 
+  41:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** #include <avr/io.h>
+  42:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** #include <stdint.h>
+  43:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 
+  44:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** /** \file */
+  45:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** /** \defgroup avr_watchdog <avr/wdt.h>: Watchdog timer handling
+  46:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     \code #include <avr/wdt.h> \endcode
+  47:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 
+  48:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     This header file declares the interface to some inline macros
+  49:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     handling the watchdog timer present in many AVR devices.  In order
+  50:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     to prevent the watchdog timer configuration from being
+  51:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     accidentally altered by a crashing application, a special timed
+  52:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     sequence is required in order to change it.  The macros within
+  53:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     this header file handle the required sequence automatically
+  54:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     before changing any value.  Interrupts will be disabled during
+  55:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     the manipulation.
+  56:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 
+  57:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     \note Depending on the fuse configuration of the particular
+  58:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     device, further restrictions might apply, in particular it might
+  59:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     be disallowed to turn off the watchdog timer.
+  60:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 
+  61:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     Note that for newer devices (ATmega88 and newer, effectively any
+  62:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     AVR that has the option to also generate interrupts), the watchdog
+  63:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     timer remains active even after a system reset (except a power-on
+  64:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     condition), using the fastest prescaler value (approximately 15
+  65:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     ms).  It is therefore required to turn off the watchdog early
+  66:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     during program startup, the datasheet recommends a sequence like
+  67:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     the following:
+  68:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 
+  69:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     \code
+  70:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     #include <stdint.h>
+  71:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     #include <avr/wdt.h>
+  72:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 
+  73:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     uint8_t mcusr_mirror __attribute__ ((section (".noinit")));
+  74:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 
+  75:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     void get_mcusr(void) \
+  76:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****       __attribute__((naked)) \
+  77:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****       __attribute__((section(".init3")));
+  78:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     void get_mcusr(void)
+  79:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     {
+  80:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****       mcusr_mirror = MCUSR;
+  81:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****       MCUSR = 0;
+  82:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****       wdt_disable();
+  83:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     }
+  84:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     \endcode
+  85:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 
+  86:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     Saving the value of MCUSR in \c mcusr_mirror is only needed if the
+  87:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     application later wants to examine the reset source, but in particular, 
+  88:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     clearing the watchdog reset flag before disabling the
+  89:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     watchdog is required, according to the datasheet.
+  90:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** */
+  91:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 
+  92:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** /**
+  93:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****    \ingroup avr_watchdog
+  94:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****    Reset the watchdog timer.  When the watchdog timer is enabled,
+  95:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****    a call to this instruction is required before the timer expires,
+  96:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****    otherwise a watchdog-initiated device reset will occur. 
+  97:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** */
+  98:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 
+  99:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** #define wdt_reset() __asm__ __volatile__ ("wdr")
+ 100:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 
+ 101:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** #ifndef __DOXYGEN__
+ 102:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 
+ 103:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** #if defined(WDP3)
+ 104:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** # define _WD_PS3_MASK       _BV(WDP3)
+ 105:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** #else
+ 106:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** # define _WD_PS3_MASK       0x00
+ 107:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** #endif
+ 108:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 
+ 109:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** #if defined(WDTCSR)
+ 110:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** #  define _WD_CONTROL_REG     WDTCSR
+ 111:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** #elif defined(WDTCR)
+ 112:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** #  define _WD_CONTROL_REG     WDTCR
+ 113:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** #else
+ 114:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** #  define _WD_CONTROL_REG     WDT
+ 115:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** #endif
+ 116:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 
+ 117:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** #if defined(WDTOE)
+ 118:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** #define _WD_CHANGE_BIT      WDTOE
+ 119:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** #else
+ 120:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** #define _WD_CHANGE_BIT      WDCE
+ 121:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** #endif
+ 122:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 
+ 123:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** #endif	/* !__DOXYGEN__ */
+ 124:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 
+ 125:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 
+ 126:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** /**
+ 127:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****    \ingroup avr_watchdog
+ 128:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****    Enable the watchdog timer, configuring it for expiry after
+ 129:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****    \c timeout (which is a combination of the \c WDP0 through
+ 130:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****    \c WDP2 bits to write into the \c WDTCR register; For those devices 
+ 131:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****    that have a \c WDTCSR register, it uses the combination of the \c WDP0 
+ 132:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****    through \c WDP3 bits).
+ 133:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 
+ 134:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****    See also the symbolic constants \c WDTO_15MS et al.
+ 135:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** */
+ 136:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 
+ 137:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 
+ 138:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** #if defined(__AVR_XMEGA__)
+ 139:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 
+ 140:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** /*
+ 141:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****    wdt_enable(timeout) for xmega devices
+ 142:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** ** write signature (CCP_IOREG_gc) that enables change of protected I/O
+ 143:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****    registers to the CCP register
+ 144:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** ** At the same time,
+ 145:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****    1) set WDT change enable (WDT_CEN_bm)
+ 146:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****    2) enable WDT (WDT_ENABLE_bm)
+ 147:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****    3) set timeout (timeout)
+ 148:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** ** Synchronization starts when ENABLE bit of WDT is set. So, wait till it
+ 149:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****    finishes (SYNCBUSY of STATUS register is automatically cleared after the
+ 150:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****    sync is finished).
+ 151:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** */
+ 152:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** #define wdt_enable(timeout) \
+ 153:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** do { \
+ 154:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** uint8_t temp; \
+ 155:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** __asm__ __volatile__ (         \
+ 156:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     "in __tmp_reg__, %[rampd]"              "\n\t" \
+ 157:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     "out %[rampd], __zero_reg__"            "\n\t" \
+ 158:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     "out %[ccp_reg], %[ioreg_cen_mask]"     "\n\t" \
+ 159:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     "sts %[wdt_reg], %[wdt_enable_timeout]" "\n\t" \
+ 160:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     "1:lds %[tmp], %[wdt_status_reg]"       "\n\t" \
+ 161:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     "sbrc %[tmp], %[wdt_syncbusy_bit]"      "\n\t" \
+ 162:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     "rjmp 1b"                               "\n\t" \
+ 163:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     "out %[rampd], __tmp_reg__"             "\n\t" \
+ 164:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     : [tmp]                "=r" (temp) \
+ 165:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     : [rampd]              "I" (_SFR_IO_ADDR(RAMPD)),      \
+ 166:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****       [ccp_reg]            "I" (_SFR_IO_ADDR(CCP)),        \
+ 167:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****       [ioreg_cen_mask]     "r" ((uint8_t)CCP_IOREG_gc),     \
+ 168:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****       [wdt_reg]            "n" (_SFR_MEM_ADDR(WDT_CTRL)),   \
+ 169:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****       [wdt_enable_timeout] "r" ((uint8_t)(WDT_CEN_bm | WDT_ENABLE_bm | timeout)), \
+ 170:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****       [wdt_status_reg]     "n" (_SFR_MEM_ADDR(WDT_STATUS)), \
+ 171:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****       [wdt_syncbusy_bit]   "I" (WDT_SYNCBUSY_bm)            \
+ 172:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     : "r0" \
+ 173:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** ); \
+ 174:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** } while(0)
+ 175:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 
+ 176:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** #define wdt_disable() \
+ 177:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** __asm__ __volatile__ (  \
+ 178:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     "in __tmp_reg__, %[rampd]"          "\n\t" \
+ 179:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     "out %[rampd], __zero_reg__"        "\n\t" \
+ 180:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     "out %[ccp_reg], %[ioreg_cen_mask]" "\n\t" \
+ 181:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     "sts %[wdt_reg], %[disable_mask]"   "\n\t" \
+ 182:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     "out %[rampd], __tmp_reg__"         "\n\t" \
+ 183:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     : \
+ 184:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     : [rampd]             "I" (_SFR_IO_ADDR(RAMPD)),    \
+ 185:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****       [ccp_reg]           "I" (_SFR_IO_ADDR(CCP)),      \
+ 186:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****       [ioreg_cen_mask]    "r" ((uint8_t)CCP_IOREG_gc),   \
+ 187:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****       [wdt_reg]           "n" (_SFR_MEM_ADDR(WDT_CTRL)), \
+ 188:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****       [disable_mask]      "r" ((uint8_t)((~WDT_ENABLE_bm) | WDT_CEN_bm)) \
+ 189:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     : "r0" \
+ 190:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** );
+ 191:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 
+ 192:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** #elif defined(__AVR_TINY__)
+ 193:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 
+ 194:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** #define wdt_enable(value) \
+ 195:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** __asm__ __volatile__ ( \
+ 196:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     "in __tmp_reg__,__SREG__" "\n\t"  \
+ 197:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     "cli" "\n\t"  \
+ 198:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     "wdr" "\n\t"  \
+ 199:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     "out %[CCPADDRESS],%[SIGNATURE]" "\n\t"  \
+ 200:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     "out %[WDTREG],%[WDVALUE]" "\n\t"  \
+ 201:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     "out __SREG__,__tmp_reg__" "\n\t"  \
+ 202:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     : /* no outputs */  \
+ 203:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     : [CCPADDRESS] "I" (_SFR_IO_ADDR(CCP)),  \
+ 204:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****       [SIGNATURE] "r" ((uint8_t)0xD8), \
+ 205:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****       [WDTREG] "I" (_SFR_IO_ADDR(_WD_CONTROL_REG)), \
+ 206:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****       [WDVALUE] "r" ((uint8_t)((value & 0x08 ? _WD_PS3_MASK : 0x00) \
+ 207:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****       | _BV(WDE) | (value & 0x07) )) \
+ 208:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     : "r16" \
+ 209:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** )
+ 210:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 
+ 211:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** #define wdt_disable() \
+ 212:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** do { \
+ 213:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** uint8_t temp_wd; \
+ 214:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** __asm__ __volatile__ ( \
+ 215:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     "in __tmp_reg__,__SREG__" "\n\t"  \
+ 216:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     "cli" "\n\t"  \
+ 217:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     "wdr" "\n\t"  \
+ 218:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     "out %[CCPADDRESS],%[SIGNATURE]" "\n\t"  \
+ 219:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     "in  %[TEMP_WD],%[WDTREG]" "\n\t" \
+ 220:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     "cbr %[TEMP_WD],%[WDVALUE]" "\n\t" \
+ 221:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     "out %[WDTREG],%[TEMP_WD]" "\n\t" \
+ 222:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     "out __SREG__,__tmp_reg__" "\n\t" \
+ 223:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     : /*no output */ \
+ 224:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     : [CCPADDRESS] "I" (_SFR_IO_ADDR(CCP)), \
+ 225:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****       [SIGNATURE] "r" ((uint8_t)0xD8), \
+ 226:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****       [WDTREG] "I" (_SFR_IO_ADDR(_WD_CONTROL_REG)), \
+ 227:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****       [TEMP_WD] "d" (temp_wd), \
+ 228:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****       [WDVALUE] "n" (1 << WDE) \
+ 229:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****     : "r16" \
+ 230:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** ); \
+ 231:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** }while(0)
+ 232:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 
+ 233:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** #elif defined(CCP)
+ 234:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 
+ 235:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** static __inline__
+ 236:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** __attribute__ ((__always_inline__))
+ 237:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** void wdt_enable (const uint8_t value)
+ 238:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** {
+ 239:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 	if (!_SFR_IO_REG_P (CCP) && !_SFR_IO_REG_P (_WD_CONTROL_REG))
+ 240:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 	{
+ 241:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 		__asm__ __volatile__ (
+ 242:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			"in __tmp_reg__,__SREG__" "\n\t"
+ 243:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			"cli" "\n\t"
+ 244:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			"wdr" "\n\t"
+ 245:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			"sts %[CCPADDRESS],%[SIGNATURE]" "\n\t"
+ 246:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			"sts %[WDTREG],%[WDVALUE]" "\n\t"
+ 247:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			"out __SREG__,__tmp_reg__" "\n\t"
+ 248:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			: /* no outputs */
+ 249:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			: [CCPADDRESS] "n" (_SFR_MEM_ADDR(CCP)),
+ 250:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			[SIGNATURE] "r" ((uint8_t)0xD8),
+ 251:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			[WDTREG] "n" (_SFR_MEM_ADDR(_WD_CONTROL_REG)),
+ 252:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			[WDVALUE] "r" ((uint8_t)((value & 0x08 ? _WD_PS3_MASK : 0x00)
+ 253:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				| _BV(WDE) | (value & 0x07) ))
+ 254:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			: "r0"
+ 255:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			);
+ 256:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 	}
+ 257:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 	else if (!_SFR_IO_REG_P (CCP) && _SFR_IO_REG_P (_WD_CONTROL_REG))
+ 258:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 	{
+ 259:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 		__asm__ __volatile__ (
+ 260:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			"in __tmp_reg__,__SREG__" "\n\t"
+ 261:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			"cli" "\n\t"
+ 262:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			"wdr" "\n\t"
+ 263:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			"sts %[CCPADDRESS],%[SIGNATURE]" "\n\t"
+ 264:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			"out %[WDTREG],%[WDVALUE]" "\n\t"
+ 265:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			"out __SREG__,__tmp_reg__" "\n\t"
+ 266:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			: /* no outputs */
+ 267:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			: [CCPADDRESS] "n" (_SFR_MEM_ADDR(CCP)),
+ 268:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			[SIGNATURE] "r" ((uint8_t)0xD8),
+ 269:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			[WDTREG] "I" (_SFR_IO_ADDR(_WD_CONTROL_REG)),
+ 270:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			[WDVALUE] "r" ((uint8_t)((value & 0x08 ? _WD_PS3_MASK : 0x00)
+ 271:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				| _BV(WDE) | (value & 0x07) ))
+ 272:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			: "r0"
+ 273:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			);
+ 274:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 	}
+ 275:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 	else if (_SFR_IO_REG_P (CCP) && !_SFR_IO_REG_P (_WD_CONTROL_REG))
+ 276:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 	{
+ 277:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 		__asm__ __volatile__ (
+ 278:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			"in __tmp_reg__,__SREG__" "\n\t"
+ 279:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			"cli" "\n\t"
+ 280:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			"wdr" "\n\t"
+ 281:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			"out %[CCPADDRESS],%[SIGNATURE]" "\n\t"
+ 282:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			"sts %[WDTREG],%[WDVALUE]" "\n\t"
+ 283:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			"out __SREG__,__tmp_reg__" "\n\t"
+ 284:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			: /* no outputs */
+ 285:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			: [CCPADDRESS] "I" (_SFR_IO_ADDR(CCP)),
+ 286:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			[SIGNATURE] "r" ((uint8_t)0xD8),
+ 287:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			[WDTREG] "n" (_SFR_MEM_ADDR(_WD_CONTROL_REG)),
+ 288:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			[WDVALUE] "r" ((uint8_t)((value & 0x08 ? _WD_PS3_MASK : 0x00)
+ 289:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				| _BV(WDE) | (value & 0x07) ))
+ 290:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			: "r0"
+ 291:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			);
+ 292:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 	}
+ 293:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 	else
+ 294:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****  	{
+ 295:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 		__asm__ __volatile__ (
+ 296:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			"in __tmp_reg__,__SREG__" "\n\t"
+ 297:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			"cli" "\n\t"
+ 298:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			"wdr" "\n\t"
+ 299:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			"out %[CCPADDRESS],%[SIGNATURE]" "\n\t"
+ 300:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			"out %[WDTREG],%[WDVALUE]" "\n\t"
+ 301:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			"out __SREG__,__tmp_reg__" "\n\t"
+ 302:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			: /* no outputs */
+ 303:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			: [CCPADDRESS] "I" (_SFR_IO_ADDR(CCP)),
+ 304:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			[SIGNATURE] "r" ((uint8_t)0xD8),
+ 305:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			[WDTREG] "I" (_SFR_IO_ADDR(_WD_CONTROL_REG)),
+ 306:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			[WDVALUE] "r" ((uint8_t)((value & 0x08 ? _WD_PS3_MASK : 0x00)
+ 307:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				| _BV(WDE) | (value & 0x07) ))
+ 308:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			: "r0"
+ 309:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 			);
+ 310:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 	}
+ 311:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** }
+ 312:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 
+ 313:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** static __inline__
+ 314:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** __attribute__ ((__always_inline__))
+ 315:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** void wdt_disable (void)
+ 316:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** {
+ 317:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 	if (!_SFR_IO_REG_P (CCP) && !_SFR_IO_REG_P(_WD_CONTROL_REG))
+ 318:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 	{
+ 319:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****         uint8_t temp_wd;
+ 320:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****         __asm__ __volatile__ (
+ 321:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"in __tmp_reg__,__SREG__" "\n\t"
+ 322:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"cli" "\n\t"
+ 323:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"wdr" "\n\t"
+ 324:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"sts %[CCPADDRESS],%[SIGNATURE]" "\n\t"
+ 325:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"lds %[TEMP_WD],%[WDTREG]" "\n\t"
+ 326:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"cbr %[TEMP_WD],%[WDVALUE]" "\n\t"
+ 327:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"sts %[WDTREG],%[TEMP_WD]" "\n\t"
+ 328:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"out __SREG__,__tmp_reg__" "\n\t"
+ 329:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				: /*no output */
+ 330:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				: [CCPADDRESS] "n" (_SFR_MEM_ADDR(CCP)),
+ 331:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				[SIGNATURE] "r" ((uint8_t)0xD8),
+ 332:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				[WDTREG] "n" (_SFR_MEM_ADDR(_WD_CONTROL_REG)),
+ 333:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				[TEMP_WD] "d" (temp_wd),
+ 334:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				[WDVALUE] "n" (1 << WDE)
+ 335:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				: "r0"
+ 336:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				);
+ 337:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 	}
+ 338:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 	else if (!_SFR_IO_REG_P (CCP) && _SFR_IO_REG_P(_WD_CONTROL_REG))
+ 339:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 	{
+ 340:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****         uint8_t temp_wd;
+ 341:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****         __asm__ __volatile__ (
+ 342:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"in __tmp_reg__,__SREG__" "\n\t"
+ 343:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"cli" "\n\t"
+ 344:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"wdr" "\n\t"
+ 345:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"sts %[CCPADDRESS],%[SIGNATURE]" "\n\t"
+ 346:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"in %[TEMP_WD],%[WDTREG]" "\n\t"
+ 347:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"cbr %[TEMP_WD],%[WDVALUE]" "\n\t"
+ 348:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"out %[WDTREG],%[TEMP_WD]" "\n\t"
+ 349:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"out __SREG__,__tmp_reg__" "\n\t"
+ 350:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				: /*no output */
+ 351:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				: [CCPADDRESS] "n" (_SFR_MEM_ADDR(CCP)),
+ 352:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				[SIGNATURE] "r" ((uint8_t)0xD8),
+ 353:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				[WDTREG] "I" (_SFR_IO_ADDR(_WD_CONTROL_REG)),
+ 354:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				[TEMP_WD] "d" (temp_wd),
+ 355:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				[WDVALUE] "n" (1 << WDE)
+ 356:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				: "r0"
+ 357:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				);
+ 358:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 	}
+ 359:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 	else if (_SFR_IO_REG_P (CCP) && !_SFR_IO_REG_P(_WD_CONTROL_REG))
+ 360:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 	{
+ 361:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****         uint8_t temp_wd;
+ 362:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****         __asm__ __volatile__ (
+ 363:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"in __tmp_reg__,__SREG__" "\n\t"
+ 364:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"cli" "\n\t"
+ 365:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"wdr" "\n\t"
+ 366:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"out %[CCPADDRESS],%[SIGNATURE]" "\n\t"
+ 367:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"lds %[TEMP_WD],%[WDTREG]" "\n\t"
+ 368:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"cbr %[TEMP_WD],%[WDVALUE]" "\n\t"
+ 369:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"sts %[WDTREG],%[TEMP_WD]" "\n\t"
+ 370:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"out __SREG__,__tmp_reg__" "\n\t"
+ 371:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				: /*no output */
+ 372:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				: [CCPADDRESS] "I" (_SFR_IO_ADDR(CCP)),
+ 373:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				[SIGNATURE] "r" ((uint8_t)0xD8),
+ 374:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				[WDTREG] "n" (_SFR_MEM_ADDR(_WD_CONTROL_REG)),
+ 375:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				[TEMP_WD] "d" (temp_wd),
+ 376:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				[WDVALUE] "n" (1 << WDE)
+ 377:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				: "r0"
+ 378:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				);
+ 379:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 	}
+ 380:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 	else
+ 381:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 	{
+ 382:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****         uint8_t temp_wd;
+ 383:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****         __asm__ __volatile__ (
+ 384:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"in __tmp_reg__,__SREG__" "\n\t"
+ 385:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"cli" "\n\t"
+ 386:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"wdr" "\n\t"
+ 387:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"out %[CCPADDRESS],%[SIGNATURE]" "\n\t"
+ 388:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"in %[TEMP_WD],%[WDTREG]" "\n\t"
+ 389:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"cbr %[TEMP_WD],%[WDVALUE]" "\n\t"
+ 390:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"out %[WDTREG],%[TEMP_WD]" "\n\t"
+ 391:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"out __SREG__,__tmp_reg__" "\n\t"
+ 392:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				: /*no output */
+ 393:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				: [CCPADDRESS] "I" (_SFR_IO_ADDR(CCP)),
+ 394:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				[SIGNATURE] "r" ((uint8_t)0xD8),
+ 395:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				[WDTREG] "I" (_SFR_IO_ADDR(_WD_CONTROL_REG)),
+ 396:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				[TEMP_WD] "d" (temp_wd),
+ 397:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				[WDVALUE] "n" (1 << WDE)
+ 398:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				: "r0"
+ 399:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				);
+ 400:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 	}
+ 401:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** }
+ 402:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 
+ 403:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** #else
+ 404:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 
+ 405:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** static __inline__
+ 406:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** __attribute__ ((__always_inline__))
+ 407:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** void wdt_enable (const uint8_t value)
+ 408:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** {
+ 409:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 	if (_SFR_IO_REG_P (_WD_CONTROL_REG))
+ 410:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 	{
+ 411:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 		__asm__ __volatile__ (
+ 412:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"in __tmp_reg__,__SREG__" "\n\t"
+ 413:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"cli" "\n\t"
+ 414:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"wdr" "\n\t"
+ 415:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"out %0, %1" "\n\t"
+ 416:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"out __SREG__,__tmp_reg__" "\n\t"
+ 417:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"out %0, %2" "\n \t"
+ 418:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				: /* no outputs */
+ 419:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				: "I" (_SFR_IO_ADDR(_WD_CONTROL_REG)),
+ 420:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"r" ((uint8_t)(_BV(_WD_CHANGE_BIT) | _BV(WDE))),
+ 421:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"r" ((uint8_t) ((value & 0x08 ? _WD_PS3_MASK : 0x00) |
+ 422:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 						_BV(WDE) | (value & 0x07)) )
+ 423:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				: "r0"
+ 424:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 		);
+ 425:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 	}
+ 426:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 	else
+ 427:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 	{
+ 428:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 		__asm__ __volatile__ (
+ 429:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"in __tmp_reg__,__SREG__" "\n\t"
+ 430:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"cli" "\n\t"
+ 431:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"wdr" "\n\t"
+ 432:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"sts %0, %1" "\n\t"
+ 433:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"out __SREG__,__tmp_reg__" "\n\t"
+ 434:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"sts %0, %2" "\n \t"
+ 435:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				: /* no outputs */
+ 436:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				: "n" (_SFR_MEM_ADDR(_WD_CONTROL_REG)),
+ 437:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"r" ((uint8_t)(_BV(_WD_CHANGE_BIT) | _BV(WDE))),
+ 438:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"r" ((uint8_t) ((value & 0x08 ? _WD_PS3_MASK : 0x00) |
+ 439:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 						_BV(WDE) | (value & 0x07)) )
+ 440:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				: "r0"
+ 441:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 		);
+ 442:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 	}
+ 443:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** }
+ 444:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 
+ 445:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** static __inline__
+ 446:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** __attribute__ ((__always_inline__))
+ 447:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** void wdt_disable (void)
+ 448:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** {
+ 449:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 	if (_SFR_IO_REG_P (_WD_CONTROL_REG))
+ 450:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 	{
+ 451:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****         uint8_t register temp_reg;
+ 452:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 		__asm__ __volatile__ (
+ 453:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"in __tmp_reg__,__SREG__"    "\n\t"
+ 454:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"cli"                        "\n\t"
+ 455:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"wdr"                        "\n\t"
+ 456:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"in  %[TEMPREG],%[WDTREG]"   "\n\t"
+ 457:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"ori %[TEMPREG],%[WDCE_WDE]" "\n\t"
+ 458:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"out %[WDTREG],%[TEMPREG]"   "\n\t"
+ 459:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"out %[WDTREG],__zero_reg__" "\n\t"
+ 460:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				"out __SREG__,__tmp_reg__"   "\n\t"
+ 461:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				: [TEMPREG] "=d" (temp_reg)
+ 462:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				: [WDTREG]  "I"  (_SFR_IO_ADDR(_WD_CONTROL_REG)),
+ 463:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				[WDCE_WDE]  "n"  ((uint8_t)(_BV(_WD_CHANGE_BIT) | _BV(WDE)))
+ 464:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 				: "r0"
+ 465:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 		);
+ 466:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 	}
+ 467:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 	else
+ 468:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 	{
+ 469:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h ****         uint8_t register temp_reg;
+ 470:c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h **** 		__asm__ __volatile__ (
+ 119               		.loc 2 470 0
+ 120               	/* #APP */
+ 121               	 ;  470 "c:\avr-gcc-7.2.0-x64-mingw\avr\include\avr\wdt.h" 1
+ 122 003a 0FB6      		in __tmp_reg__,__SREG__
+ 123 003c F894      		cli
+ 124 003e A895      		wdr
+ 125 0040 8091 6000 		lds r24,96
+ 126 0044 8861      		ori r24,24
+ 127 0046 8093 6000 		sts 96,r24
+ 128 004a 1092 6000 		sts 96,__zero_reg__
+ 129 004e 0FBE      		out __SREG__,__tmp_reg__
+ 130               		
+ 131               	 ;  0 "" 2
+ 132               	.LVL3:
+ 133               	/* #NOAPP */
+ 134               	.L2:
+ 135               	/* epilogue start */
+ 136               	.LBE18:
+ 137               	.LBE17:
+ 138               	.LBE16:
+ 139               	.LBE15:
+  99:../../tmk_core/common/avr/suspend.c **** #ifdef NO_SUSPEND_POWER_DOWN
+ 100:../../tmk_core/common/avr/suspend.c ****     ;
+ 101:../../tmk_core/common/avr/suspend.c **** #elif defined(SUSPEND_MODE_NOPOWERSAVE)
+ 102:../../tmk_core/common/avr/suspend.c ****     ;
+ 103:../../tmk_core/common/avr/suspend.c **** #elif defined(SUSPEND_MODE_STANDBY)
+ 104:../../tmk_core/common/avr/suspend.c ****     standby();
+ 105:../../tmk_core/common/avr/suspend.c **** #elif defined(SUSPEND_MODE_IDLE)
+ 106:../../tmk_core/common/avr/suspend.c ****     idle();
+ 107:../../tmk_core/common/avr/suspend.c **** #else
+ 108:../../tmk_core/common/avr/suspend.c ****     power_down(WDTO_15MS);
+ 109:../../tmk_core/common/avr/suspend.c **** #endif
+ 110:../../tmk_core/common/avr/suspend.c **** }
+ 140               		.loc 1 110 0
+ 141 0050 0895      		ret
+ 142               		.cfi_endproc
+ 143               	.LFE112:
+ 145               		.section	.text.suspend_wakeup_condition,"ax",@progbits
+ 146               	.global	suspend_wakeup_condition
+ 148               	suspend_wakeup_condition:
+ 149               	.LFB113:
+ 111:../../tmk_core/common/avr/suspend.c **** 
+ 112:../../tmk_core/common/avr/suspend.c **** bool suspend_wakeup_condition(void)
+ 113:../../tmk_core/common/avr/suspend.c **** {
+ 150               		.loc 1 113 0
+ 151               		.cfi_startproc
+ 152 0000 CF93      		push r28
+ 153               	.LCFI0:
+ 154               		.cfi_def_cfa_offset 3
+ 155               		.cfi_offset 28, -2
+ 156               	/* prologue: function */
+ 157               	/* frame size = 0 */
+ 158               	/* stack size = 1 */
+ 159               	.L__stack_usage = 1
+ 114:../../tmk_core/common/avr/suspend.c ****     matrix_power_up();
+ 160               		.loc 1 114 0
+ 161 0002 0E94 0000 		call matrix_power_up
+ 162               	.LVL4:
+ 115:../../tmk_core/common/avr/suspend.c ****     matrix_scan();
+ 163               		.loc 1 115 0
+ 164 0006 0E94 0000 		call matrix_scan
+ 165               	.LVL5:
+ 116:../../tmk_core/common/avr/suspend.c ****     matrix_power_down();
+ 166               		.loc 1 116 0
+ 167 000a 0E94 0000 		call matrix_power_down
+ 168               	.LVL6:
+ 169               	.LBB19:
+ 117:../../tmk_core/common/avr/suspend.c ****     for (uint8_t r = 0; r < MATRIX_ROWS; r++) {
+ 170               		.loc 1 117 0
+ 171 000e C0E0      		ldi r28,0
+ 172               	.LVL7:
+ 173               	.L9:
+ 118:../../tmk_core/common/avr/suspend.c ****         if (matrix_get_row(r)) return true;
+ 174               		.loc 1 118 0
+ 175 0010 8C2F      		mov r24,r28
+ 176 0012 0E94 0000 		call matrix_get_row
+ 177               	.LVL8:
+ 178 0016 672B      		or r22,r23
+ 179 0018 682B      		or r22,r24
+ 180 001a 692B      		or r22,r25
+ 181 001c 01F4      		brne .L10
+ 117:../../tmk_core/common/avr/suspend.c ****     for (uint8_t r = 0; r < MATRIX_ROWS; r++) {
+ 182               		.loc 1 117 0 discriminator 2
+ 183 001e CF5F      		subi r28,lo8(-(1))
+ 184               	.LVL9:
+ 185 0020 C630      		cpi r28,lo8(6)
+ 186 0022 01F4      		brne .L9
+ 187               	.LBE19:
+ 119:../../tmk_core/common/avr/suspend.c ****     }
+ 120:../../tmk_core/common/avr/suspend.c ****     return false;
+ 188               		.loc 1 120 0
+ 189 0024 80E0      		ldi r24,0
+ 190               	.L7:
+ 191               	/* epilogue start */
+ 121:../../tmk_core/common/avr/suspend.c **** }
+ 192               		.loc 1 121 0
+ 193 0026 CF91      		pop r28
+ 194               	.LVL10:
+ 195 0028 0895      		ret
+ 196               	.LVL11:
+ 197               	.L10:
+ 198               	.LBB20:
+ 118:../../tmk_core/common/avr/suspend.c ****         if (matrix_get_row(r)) return true;
+ 199               		.loc 1 118 0
+ 200 002a 81E0      		ldi r24,lo8(1)
+ 201 002c 00C0      		rjmp .L7
+ 202               	.LBE20:
+ 203               		.cfi_endproc
+ 204               	.LFE113:
+ 206               		.section	.text.suspend_wakeup_init,"ax",@progbits
+ 207               	.global	suspend_wakeup_init
+ 209               	suspend_wakeup_init:
+ 210               	.LFB114:
+ 122:../../tmk_core/common/avr/suspend.c **** 
+ 123:../../tmk_core/common/avr/suspend.c **** // run immediately after wakeup
+ 124:../../tmk_core/common/avr/suspend.c **** void suspend_wakeup_init(void)
+ 125:../../tmk_core/common/avr/suspend.c **** {
+ 211               		.loc 1 125 0
+ 212               		.cfi_startproc
+ 213               	/* prologue: function */
+ 214               	/* frame size = 0 */
+ 215               	/* stack size = 0 */
+ 216               	.L__stack_usage = 0
+ 126:../../tmk_core/common/avr/suspend.c ****     // clear keyboard state
+ 127:../../tmk_core/common/avr/suspend.c ****     matrix_clear();
+ 217               		.loc 1 127 0
+ 218 0000 0E94 0000 		call matrix_clear
+ 219               	.LVL12:
+ 128:../../tmk_core/common/avr/suspend.c ****     clear_keyboard();
+ 220               		.loc 1 128 0
+ 221 0004 0C94 0000 		jmp clear_keyboard
+ 222               	.LVL13:
+ 223               		.cfi_endproc
+ 224               	.LFE114:
+ 226               		.section	.text.__vector_12,"ax",@progbits
+ 227               	.global	__vector_12
+ 229               	__vector_12:
+ 230               	.LFB115:
+ 129:../../tmk_core/common/avr/suspend.c **** #ifdef BACKLIGHT_ENABLE
+ 130:../../tmk_core/common/avr/suspend.c ****     backlight_init();
+ 131:../../tmk_core/common/avr/suspend.c **** #endif
+ 132:../../tmk_core/common/avr/suspend.c **** }
+ 133:../../tmk_core/common/avr/suspend.c **** 
+ 134:../../tmk_core/common/avr/suspend.c **** #ifndef NO_SUSPEND_POWER_DOWN
+ 135:../../tmk_core/common/avr/suspend.c **** /* watchdog timeout */
+ 136:../../tmk_core/common/avr/suspend.c **** ISR(WDT_vect)
+ 137:../../tmk_core/common/avr/suspend.c **** {
+ 231               		.loc 1 137 0
+ 232               		.cfi_startproc
+ 233 0000 1F92      		push r1
+ 234               	.LCFI1:
+ 235               		.cfi_def_cfa_offset 3
+ 236               		.cfi_offset 1, -2
+ 237 0002 0F92      		push r0
+ 238               	.LCFI2:
+ 239               		.cfi_def_cfa_offset 4
+ 240               		.cfi_offset 0, -3
+ 241 0004 0FB6      		in r0,__SREG__
+ 242 0006 0F92      		push r0
+ 243 0008 1124      		clr __zero_reg__
+ 244 000a 8F93      		push r24
+ 245               	.LCFI3:
+ 246               		.cfi_def_cfa_offset 5
+ 247               		.cfi_offset 24, -4
+ 248 000c 9F93      		push r25
+ 249               	.LCFI4:
+ 250               		.cfi_def_cfa_offset 6
+ 251               		.cfi_offset 25, -5
+ 252 000e AF93      		push r26
+ 253               	.LCFI5:
+ 254               		.cfi_def_cfa_offset 7
+ 255               		.cfi_offset 26, -6
+ 256 0010 BF93      		push r27
+ 257               	.LCFI6:
+ 258               		.cfi_def_cfa_offset 8
+ 259               		.cfi_offset 27, -7
+ 260               	/* prologue: Signal */
+ 261               	/* frame size = 0 */
+ 262               	/* stack size = 7 */
+ 263               	.L__stack_usage = 7
+ 138:../../tmk_core/common/avr/suspend.c ****     // compensate timer for sleep
+ 139:../../tmk_core/common/avr/suspend.c ****     switch (wdt_timeout) {
+ 264               		.loc 1 139 0
+ 265 0012 8091 0000 		lds r24,wdt_timeout
+ 266 0016 8111      		cpse r24,__zero_reg__
+ 267 0018 00C0      		rjmp .L13
+ 140:../../tmk_core/common/avr/suspend.c ****         case WDTO_15MS:
+ 141:../../tmk_core/common/avr/suspend.c ****             timer_count += 15 + 2;  // WDTO_15MS + 2(from observation)
+ 268               		.loc 1 141 0
+ 269 001a 8091 0000 		lds r24,timer_count
+ 270 001e 9091 0000 		lds r25,timer_count+1
+ 271 0022 A091 0000 		lds r26,timer_count+2
+ 272 0026 B091 0000 		lds r27,timer_count+3
+ 273 002a 4196      		adiw r24,17
+ 274 002c A11D      		adc r26,__zero_reg__
+ 275 002e B11D      		adc r27,__zero_reg__
+ 276 0030 8093 0000 		sts timer_count,r24
+ 277 0034 9093 0000 		sts timer_count+1,r25
+ 278 0038 A093 0000 		sts timer_count+2,r26
+ 279 003c B093 0000 		sts timer_count+3,r27
+ 280               	.L13:
+ 281               	/* epilogue start */
+ 142:../../tmk_core/common/avr/suspend.c ****             break;
+ 143:../../tmk_core/common/avr/suspend.c ****         default:
+ 144:../../tmk_core/common/avr/suspend.c ****             ;
+ 145:../../tmk_core/common/avr/suspend.c ****     }
+ 146:../../tmk_core/common/avr/suspend.c **** }
+ 282               		.loc 1 146 0
+ 283 0040 BF91      		pop r27
+ 284 0042 AF91      		pop r26
+ 285 0044 9F91      		pop r25
+ 286 0046 8F91      		pop r24
+ 287 0048 0F90      		pop r0
+ 288 004a 0FBE      		out __SREG__,r0
+ 289 004c 0F90      		pop r0
+ 290 004e 1F90      		pop r1
+ 291 0050 1895      		reti
+ 292               		.cfi_endproc
+ 293               	.LFE115:
+ 295               		.section	.bss.wdt_timeout,"aw",@nobits
+ 298               	wdt_timeout:
+ 299 0000 00        		.zero	1
+ 300               		.text
+ 301               	.Letext0:
+ 302               		.file 3 "c:\\avr-gcc-7.2.0-x64-mingw\\avr\\include\\stdint.h"
+ 303               		.file 4 "../../tmk_core/protocol/lufa/LUFA-git/LUFA/Drivers/USB/Core/AVR8/../StdRequestType.h"
+ 304               		.file 5 "../../tmk_core/common/timer.h"
+ 305               		.file 6 "../../tmk_core/protocol/lufa/LUFA-git/LUFA/Drivers/USB/Core/AVR8/../DeviceStandardReq.h"
+ 306               		.file 7 "../../tmk_core/protocol/lufa/LUFA-git/LUFA/Drivers/USB/Core/USBTask.h"
+ 307               		.file 8 "../../tmk_core/protocol/lufa/LUFA-git/LUFA/Drivers/USB/Core/HostStandardReq.h"
+ 308               		.file 9 "c:\\avr-gcc-7.2.0-x64-mingw\\avr\\include\\stdio.h"
+ 309               		.file 10 "../../tmk_core/common/report.h"
+ 310               		.file 11 "../../tmk_core/common/host_driver.h"
+ 311               		.file 12 "../../tmk_core/common/host.h"
+ 312               		.file 13 "../../tmk_core/protocol/lufa/lufa.h"
+ 313               		.file 14 "../../tmk_core/common/matrix.h"
+ 314               		.file 15 "../../tmk_core/common/action.h"
+ 315               		.file 16 "../../tmk_core/protocol/lufa/LUFA-git/LUFA/Drivers/USB/Core/AVR8/../Device.h"
+DEFINED SYMBOLS
+                            *ABS*:0000000000000000 suspend.c
+C:\cygwin\tmp\cc3hmLc3.s:2      *ABS*:000000000000003e __SP_H__
+C:\cygwin\tmp\cc3hmLc3.s:3      *ABS*:000000000000003d __SP_L__
+C:\cygwin\tmp\cc3hmLc3.s:4      *ABS*:000000000000003f __SREG__
+C:\cygwin\tmp\cc3hmLc3.s:5      *ABS*:0000000000000000 __tmp_reg__
+C:\cygwin\tmp\cc3hmLc3.s:6      *ABS*:0000000000000001 __zero_reg__
+C:\cygwin\tmp\cc3hmLc3.s:13     .text.suspend_idle:0000000000000000 suspend_idle
+C:\cygwin\tmp\cc3hmLc3.s:60     .text.suspend_power_down:0000000000000000 suspend_power_down
+C:\cygwin\tmp\cc3hmLc3.s:298    .bss.wdt_timeout:0000000000000000 wdt_timeout
+C:\cygwin\tmp\cc3hmLc3.s:148    .text.suspend_wakeup_condition:0000000000000000 suspend_wakeup_condition
+C:\cygwin\tmp\cc3hmLc3.s:209    .text.suspend_wakeup_init:0000000000000000 suspend_wakeup_init
+C:\cygwin\tmp\cc3hmLc3.s:229    .text.__vector_12:0000000000000000 __vector_12
+
+UNDEFINED SYMBOLS
+USB_DeviceState
+matrix_power_up
+matrix_scan
+matrix_power_down
+matrix_get_row
+matrix_clear
+clear_keyboard
+timer_count
+__do_clear_bss
